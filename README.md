@@ -1,2 +1,3 @@
-# meritrank
-Sybil-Tolerant Reputation for Merit-based Tokenomics
+# MeritRank: Sybil-Tolerant Reputation for Merit-based Tokenomics
+
+
