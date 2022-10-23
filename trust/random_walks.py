@@ -17,7 +17,7 @@ class BiasStrategies(Enum):
 class RandomWalks:
 
     def __init__(self, graph: nx.DiGraph, alpha: float = 1.0, base_number_random_walks: int = 1000) -> None:
-        """Calcalate the random walks for a given graph.
+        """Calculate the random walks for a given graph.
         @param graph: The graph to calculate the random walks for.
         @param alpha: Score value used for the bias.
         @param base_number_random_walks: The number of random walks to run.
@@ -26,9 +26,14 @@ class RandomWalks:
         self.graph = graph
 
         self.random_walks = {}
+        self.seed_node = None
         self.counters = {}
+        self.neg_counters = {}
+
         self.num_edge_walks = defaultdict(int)
         self.hits = {}
+        self.neg_hits = {}
+
         self.number_of_walks = {}
         self.base_number_of_random_walks = base_number_random_walks
 
@@ -62,7 +67,7 @@ class RandomWalks:
         cur_weight = float('inf') if not cur_weight else cur_weight
         if revert:
             current_node, neigh = neigh, current_node
-        return min(self.graph.get_edge_data(current_node, neigh, default={'weight': 0})['weight'], cur_weight)
+        return min(abs(self.graph.get_edge_data(current_node, neigh, default={'weight': 0})['weight']), cur_weight)
 
     def edge_weight_bounded(self,
                             current_node: int,
@@ -80,6 +85,13 @@ class RandomWalks:
         return 0.0 if self.num_edge_walks[(current_node, neigh)] \
                       + self.base_number_of_random_walks * int(
             self.penalties.get(neigh, 0) / self.alpha) >= val else val
+
+    def weight_with_fine(self,
+                         current_node: int,
+                         neigh: int,
+                         cur_weight: float = None,
+                         revert: bool = False):
+        return (1 - self.penalties.get(neigh, 0)) * self.weight(current_node, neigh, cur_weight, revert)
 
     def neigh(self, x: int, back_random_walk: bool = False) -> List:
         try:
@@ -99,7 +111,7 @@ class RandomWalks:
         c = random.uniform(0, 1)
 
         curent_coleadings = defaultdict(lambda: set())
-        
+
         while c > reset_probability and len(self.neigh(random_walk[-1], back_random_walk)) > 0:
             current_node = random_walk[-1]
             current_neighbors = self.neigh(current_node, back_random_walk)
@@ -118,9 +130,17 @@ class RandomWalks:
                 cur_weight = min(current_edge_weights[random_id], cur_weight)
             self.num_edge_walks[(current_node, next_node)] += 1
 
+            from_node = next_node if back_random_walk else current_node
+            to_node = current_node if back_random_walk else next_node
+            w = self.graph.get_edge_data(from_node, to_node, default={'weight': 0})['weight']
+            if w < 0:
+                self.neg_counters[seed_node][next_node] += 1
+                self.neg_hits[seed_node][next_node] += 1
+                break
+
             for prev_node in reversed(random_walk):
                 if prev_node == seed_node or next_node == seed_node:
-                    break 
+                    break
                 curent_coleadings[next_node].add(prev_node)
 
             random_walk.append(next_node)
@@ -129,7 +149,7 @@ class RandomWalks:
         # Update global coleadings
         for k, s_set in curent_coleadings.items():
             for s in s_set:
-                self.coleadings[k][s] += 1 
+                self.coleadings[k][s] += 1
 
         if seed_node not in self.random_walks:
             self.random_walks[seed_node] = []
@@ -168,6 +188,21 @@ class RandomWalks:
                                           reset_probability, back_random_walk,
                                           update_weight)
 
+
+    def run_with_all_negative_walks(self,
+                                    seed_node: int,
+                                    prw: int = 1000,
+                                    prp: float = 0.15,
+                                    nrw: int = 1000,
+                                    nrp: float = 0.2
+                                    ) -> None:
+        # Positive walks
+        self.run(seed_node, prw, prp,
+                 False)
+        # All negative walks
+        for k in list(self.neg_hits[seed_node].keys()):
+            self.run(k, nrw, nrp, back_random_walk=True)
+
     def run(self,
             seed_node: int,
             num_random_walks: int = 5000,
@@ -188,6 +223,9 @@ class RandomWalks:
         """
         self.num_edge_walks = defaultdict(int)
         self.random_walks[seed_node] = []
+        self.neg_hits[seed_node] = defaultdict(int)
+        self.neg_counters[seed_node] = defaultdict(int)
+
         for n in range(num_random_walks):
             self.run_one_walk(seed_node, reset_probability,
                               back_random_walk, bias_strategy,
@@ -200,19 +238,26 @@ class RandomWalks:
     def has_node(self, node: int) -> bool:
         return node in self.random_walks
 
-    def get_total_hits(self, seed_node: int, target_node: int) -> float:
+    def get_total_positive_hits(self, seed_node: int, target_node: int) -> float:
         """Get number of times the target node was visited in the run.
         @param seed_node: The seed node.
         @param target_node: The target node.
         @return: The number of times the target node was visited."""
-        if seed_node == target_node:
-            return self.counters[seed_node].get(seed_node, 0)
         return self.counters[seed_node].get(target_node, 0)
 
-    def get_total_sum(self, seed_node: int) -> float:
+    def get_total_negative_hits(self, seed_node: int, target_node: int) -> float:
+        return self.neg_counters.get(seed_node, lambda: {}).get(target_node, 0)
+
+    def get_total_positive_walk_hits_sum(self, seed_node: int) -> float:
         return sum(self.counters[seed_node].values())
 
-    def get_number_of_hits(self, seed_node: int, target_node: int) -> float:
+    def get_total_negative_walk_hits_sum(self, seed_node: int) -> float:
+        return sum(self.neg_counters[seed_node].values())
+
+    def get_total_negative_nodes(self, seed_node: int) -> List[int]:
+        return list(self.neg_counters[seed_node].keys())
+
+    def get_number_positive_hits(self, seed_node: int, target_node: int) -> float:
         """Get number of walks that hit the target node.
         @param seed_node: The seed node.
         @param target_node: The target node.
@@ -221,6 +266,18 @@ class RandomWalks:
             return self.number_of_walks[seed_node]
         return self.hits[seed_node].get(target_node, 0)
 
-    def get_number_sum(self, seed_node: int) -> float:
+    def get_number_negative_hits(self, seed_node: int, target_node: int) -> float:
+        """Get number of walks that hit the target node.
+        @param seed_node: The seed node.
+        @param target_node: The target node.
+        @return: Number of hits of target node."""
+        return self.neg_hits.get(seed_node, lambda: {}).get(target_node, 0)
+
+    def get_number_negative_nodes(self, seed_node: int) -> List[int]:
+        return list(self.neg_hits[seed_node].keys())
+
+    def get_number_positive_hits_sum(self, seed_node: int) -> float:
         return sum(self.hits[seed_node].values())
 
+    def get_number_negative_hits_sum(self, seed_node: int) -> float:
+        return sum(self.neg_hits[seed_node].values())
